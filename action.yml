@@ -1,0 +1,93 @@
+name: "opencode GitHub Action"
+description: "Run opencode in GitHub Actions workflows"
+branding:
+  icon: "code"
+  color: "orange"
+
+inputs:
+  model:
+    description: "Model to use"
+    required: true
+
+  agent:
+    description: "Agent to use. Must be a primary agent. Falls back to default_agent from config or 'build' if not found."
+    required: false
+
+  share:
+    description: "Share the opencode session (defaults to true for public repos)"
+    required: false
+
+  prompt:
+    description: "Custom prompt to override the default prompt"
+    required: false
+
+  mentions:
+    description: "Comma-separated list of trigger phrases (case-insensitive). Defaults to '/opencode,/oc'"
+    required: false
+
+  variant:
+    description: "Model variant for provider-specific reasoning effort (e.g., high, max, minimal)"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get opencode version
+      id: version
+      shell: bash
+      run: |
+        VERSION=$(curl -sf https://api.github.com/repos/anomalyco/opencode/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+        echo "version=${VERSION:-latest}" >> $FORGEJO_OUTPUT
+
+    - name: Cache opencode
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.opencode/bin
+        key: opencode-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
+
+    - name: Install opencode
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: curl -fsSL https://opencode.ai/install | bash
+
+    - name: Cache forgejo
+      id: cache-forgejo
+      uses: actions/cache@v4
+      with:
+        path: ~/.forgejo/bin
+        key: fj-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
+      
+    - name: Install opencode
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/.forgejo/bin
+        curl -fsSL https://codeberg.org/forgejo-contrib/forgejo-cli/releases/download/v0.5.0/forgejo-cli-x86_64-linux.tar.gz | tar -xzC ~/.forgejo/bin
+        chmod +x ~/.forgejo/bin/fj
+
+    - name: Add opencode to PATH
+      shell: bash
+      run: echo "$HOME/.opencode/bin" >> $FORGEJO_PATH
+
+    - name: Add forgejo to PATH
+      shell: bash
+      run: echo "$HOME/.forgejo/bin" >> $FORGEJO_PATH
+
+    - name: Run opencode
+      shell: bash
+      id: run_opencode
+      run: |
+        fj auth add-key $FORGEJO_ACTOR $FORGEJO_TOKEN
+        echo "FORGEJO_EVENT_PATH"
+        cat $FORGEJO_EVENT_PATH
+      env:
+        MODEL: ${{ inputs.model }}
+        AGENT: ${{ inputs.agent }}
+        SHARE: ${{ inputs.share }}
+        PROMPT: ${{ inputs.prompt }}
+        MENTIONS: ${{ inputs.mentions }}
+        VARIANT: ${{ inputs.variant }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
