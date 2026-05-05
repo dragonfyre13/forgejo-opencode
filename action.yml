@@ -56,15 +56,16 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.forgejo/bin
-        key: fj-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
+        key: fj-${{ runner.os }}-${{ runner.arch }}-0.5.0
       
-    - name: Install opencode
-      if: steps.cache.outputs.cache-hit != 'true'
+    - name: Install forgejo
+      if: steps.cache-forgejo.outputs.cache-hit != 'true'
       shell: bash
       run: |
         mkdir -p ~/.forgejo/bin
         curl -fsSL https://codeberg.org/forgejo-contrib/forgejo-cli/releases/download/v0.5.0/forgejo-cli-x86_64-linux.tar.gz | tar -xzC ~/.forgejo/bin
-        chmod +x ~/.forgejo/bin/fj
+        curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-amd64 > ~/.forgejo/bin/jq
+        chmod +x ~/.forgejo/bin/fj ~/.forgejo/bin/jq
 
     - name: Add opencode to PATH
       shell: bash
