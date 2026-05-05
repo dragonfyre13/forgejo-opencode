@@ -88,4 +88,3 @@ runs:
         PROMPT: ${{ inputs.prompt }}
         MENTIONS: ${{ inputs.mentions }}
         VARIANT: ${{ inputs.variant }}
-
