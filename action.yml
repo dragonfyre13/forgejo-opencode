@@ -79,9 +79,11 @@ runs:
       shell: bash
       id: run_opencode
       run: |
+        echo "fj auth add-key $FORGEJO_ACTOR $FORGEJO_TOKEN"
         fj auth add-key $FORGEJO_ACTOR $FORGEJO_TOKEN
-        echo "FORGEJO_EVENT_PATH"
+        echo "FORGEJO_EVENT_PATH: $FORGEJO_EVENT_PATH"
         cat $FORGEJO_EVENT_PATH
+        echo ""
       env:
         MODEL: ${{ inputs.model }}
         AGENT: ${{ inputs.agent }}
