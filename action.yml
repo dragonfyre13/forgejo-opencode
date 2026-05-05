@@ -1,5 +1,5 @@
-name: "opencode GitHub Action"
-description: "Run opencode in GitHub Actions workflows"
+name: "opencode Forgejo Action"
+description: "Run opencode in Forgejo Actions workflows"
 branding:
   icon: "code"
   color: "orange"
@@ -88,6 +88,4 @@ runs:
         PROMPT: ${{ inputs.prompt }}
         MENTIONS: ${{ inputs.mentions }}
         VARIANT: ${{ inputs.variant }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
 
