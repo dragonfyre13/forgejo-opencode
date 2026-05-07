@@ -159,7 +159,7 @@ runs:
           curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews?page=1&limit=1000" > $RUNNER_TEMP/pr_reviews.json
 
           echo "Hitting the API (repeatedly) to get PR Review Comments"
-          jq -r '.[].id' | xargs -I {} curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})' $RUNNER_TEMP/pr_reviews.json > $RUNNER_TEMP/pr_review_comments.json
+          jq -r '.[].id' $RUNNER_TEMP/pr_reviews.json | xargs -I {} curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})' > $RUNNER_TEMP/pr_review_comments.json
           BRANCH_NAME="$(jq -r '.head.ref' $RUNNER_TEMP/pr_details.json)"
         fi
 
