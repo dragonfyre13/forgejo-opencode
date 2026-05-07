@@ -209,10 +209,10 @@ runs:
           echo "Retrieving All Comments JSON from issue API"
           ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
           CONTEXT=""
-          CONTEXT="$CONTEXT* **Pull Request Title**: $PR_TITLE$NEWLINE
-          CONTEXT="$CONTEXT* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE
-          CONTEXT="$CONTEXT* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE
-          CONTEXT="$CONTEXT* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE
+          CONTEXT="$CONTEXT* **Pull Request Title**: $PR_TITLE$NEWLINE"
+          CONTEXT="$CONTEXT* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE"
+          CONTEXT="$CONTEXT* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE"
+          CONTEXT="$CONTEXT* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE"
           CONTEXT="$CONTEXT* **All Pull Request Review Comments**: $PR_REVIEW_COMMENTS_JSON"
           ACTION_INDICATOR="To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO."
         else
@@ -228,8 +228,8 @@ runs:
           ISSUE_TITLE="$(jq -r '.issue.title' $FORGEJO_EVENT_PATH)"
           TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
           CONTEXT=""
-          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE
-          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE
+          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE"
+          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE"
           CONTEXT="$CONTEXT* **All $ISSUE_OR_PR Comments**: $ALL_COMMENTS_JSON"
           ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. The first commit summary (first line) and body text (subsequent lines) will be used for the title and description of the pull request, respectively. The description may be in markdown format."
         fi
