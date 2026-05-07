@@ -339,7 +339,7 @@ runs:
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
       run: |
         echo "Adding opencode output as a comment."
-        COMMENT_JSON="$(jq -n --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
+        COMMENT_JSON="$(jq -cn --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
         curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
     - name: Discard any uncommitted local changes
@@ -403,7 +403,7 @@ runs:
         ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
         PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
         PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse | head -1)"
-        PULL_REQ_JSON="$(jq -n --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
+        PULL_REQ_JSON="$(jq -cn --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
         ACTION_RUN_URL="$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/actions/runs/$FORGEJO_RUN_NUMBER"
         BRANCH_COMMENT_NO_KEY="Created branch [$BRANCH_NAME]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/src/branch/$BRANCH_NAME) with changes via [Action Run]($ACTION_RUN_URL).
         [Create a PR from this branch]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/compare/main...$BRANCH_NAME)
@@ -414,11 +414,12 @@ runs:
         
         if [ -z "$PR_CREATION_PAT" ]; then
           echo "Dropping a comment regarding the branch instead of actually creating a PR since the ephemeral token doesn't have permissions for it"
-          BRANCH_COMMENT_JSON="$(jq -n --arg body "$BRANCH_COMMENT_NO_KEY" '{body: $body}')"
+          BRANCH_COMMENT_JSON="$(jq -cn --arg body "$BRANCH_COMMENT_NO_KEY" '{body: $body}')"
           curl -X 'POST' "$ISSUE_API_URL/comments" -d "$BRANCH_COMMENT_JSON" > /dev/null
         else
           echo "Creating PR using a special access key"
           # BEWARE -- This request is not using the normal curlrc file (-q flag) and is instead using a custom PAT
+          echo "PULL_REQ_JSON = $PULL_REQ_JSON"
           PR_CREATE_RESP="$(curl -qsSL -X 'POST' -w "HTTP_STATUS:%{http_code}" -H "Authorization: Bearer $PR_CREATION_PAT" -H "Content-Type: application/json" -H "Accept: application/json" "$REPO_API_URL/pulls" -d "$PULL_REQ_JSON")"
           PR_CREATE_STATUS_CODE="$(echo "$PR_CREATE_RESP" | tr -d '\n' | sed -e 's/.*HTTP_STATUS://')"
           PR_CREATE_JSON_RESP="$(echo "$PR_CREATE_RESP" | sed -e 's/HTTP_STATUS:[0-9]\{3\}$//')"
@@ -426,11 +427,11 @@ runs:
           PR_CREATION_RESP_MESSAGE="$(echo "$PR_CREATE_JSON_RESP" | jq -r '.message')"
           if [ $PR_CREATE_STATUS_CODE -ge 200 ] && [ $PR_CREATE_STATUS_CODE -le 299 ]; then
             echo "Leaving a comment in the original issue with the PR reference"
-            PR_COMMENT_JSON="$(jq -n --arg body "Created PR #$PR_NUM_CREATED via [Action Run]($ACTION_RUN_URL)" '{body: $body}')"
+            PR_COMMENT_JSON="$(jq -cn --arg body "Created PR #$PR_NUM_CREATED via [Action Run]($ACTION_RUN_URL)" '{body: $body}')"
             curl -X 'POST' "$ISSUE_API_URL/comments" -d "$PR_COMMENT_JSON" > /dev/null
           else
             echo "Dropping a comment referring to the branch itself, since creating the PR failed"
-            BRANCH_COMMENT_JSON="$(jq -n --arg body "$BRANCH_COMMENT_FAILED_KEY Resp Code: $PR_CREATE_STATUS_CODE and Message: $PR_CREATION_RESP_MESSAGE </sub>" '{body: $body}')"
+            BRANCH_COMMENT_JSON="$(jq -cn --arg body "$BRANCH_COMMENT_FAILED_KEY Resp Code: $PR_CREATE_STATUS_CODE and Message: $PR_CREATION_RESP_MESSAGE </sub>" '{body: $body}')"
             curl -X 'POST' "$ISSUE_API_URL/comments" -d "$BRANCH_COMMENT_JSON" > /dev/null
           fi
         fi
