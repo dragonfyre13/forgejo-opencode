@@ -94,17 +94,19 @@ runs:
       id: pr_details
       shell: bash
       run: |
+        echo "::group::Get PR Details"
         if [ "$FORGEJO_EVENT_NAME" == "issue_comment" ] && [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
           PR="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
         elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
           PR="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
         fi
+        echo "PR: $PR"
 
         if [ ! -z "$PR" ]; then
           echo "pr=$PR" >> $FORGEJO_OUTPUT
           REVIEWS_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/pulls/$PR/reviews"
-          echo "Pulling all reviews attached to PR $PR"
           # We're grabbing the latest review (the currently active one) as the relevant one since there's not a reliable way to tell WHICH review triggered us
+          echo "Pulling all reviews attached to PR $PR"
           PR_REVIEW_JSON="$(curl "$REVIEWS_URL?page=1&limit=1000")"
           LATEST_PR_REVIEW_ID="$(echo "$PR_REVIEW_JSON" | jq -c 'first(.[] | select(.stale == false)).id')"
           echo "latest_pr_review_id=$LATEST_PR_REVIEW_ID" >> $FORGEJO_OUTPUT
@@ -115,20 +117,22 @@ runs:
           ALL_COMMENTS_JSON=$(echo "$PR_REVIEW_JSON" | jq -r '.[].id' | xargs -I {} curl "$REVIEWS_URL/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})')
           echo "all_comments_json=$ALL_COMMENTS_JSON" >> $FORGEJO_OUTPUT
         fi
+        echo "::endgroup::"
 
     - name: React to original comment
+      if: forgejo.event_name != 'pull_request_review_comment'
       shell: bash
       run: |
-        if [ "$FORGEJO_EVENT_NAME" != "pull_request_review_comment" ]; then
-          # Easy when it's a regular comment, otherwise won't worry about it
-          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
-          curl -X 'POST' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
-        fi
+        # Easy when it's a regular comment, otherwise we won't worry about attaching it
+        COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+        echo "Reacting to original comment"
+        curl -X 'POST' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
 
     - name: Create git commit details and hooks to attribute work properly
       shell: bash
       run: |
+        echo "::group::Create git details and hooks"
         git config --global push.autoSetupRemote true
         git config --global user.email "$(jq -r '.sender.email' $FORGEJO_EVENT_PATH)"
         git config --global user.name "$(jq -r '.sender.full_name' $FORGEJO_EVENT_PATH)"
@@ -149,14 +153,17 @@ runs:
         ' > .git/hooks/post-commit
 
         chmod +x .git/hooks/prepare-commit-msg .git/hooks/post-commit
+        echo "::endgroup::"
 
     - name: Get Branch Name
       id: branch_name
       shell: bash
       run: |
+        echo "::group::Get Branch Name"
         if [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
           REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
           ISSUE_NUMBER="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
+          echo "Retrieving branch name from pull request"
           BRANCH_NAME="$(curl -X 'GET' "$REPO_API_URL/pulls/$ISSUE_NUMBER" | jq -r '.head.ref')"
         elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
           BRANCH_NAME="$(jq -r '.pull_request.head.ref' $FORGEJO_EVENT_PATH)"
@@ -165,11 +172,13 @@ runs:
         fi
         echo "Using branch name: $BRANCH_NAME"
         echo "branch_name=$BRANCH_NAME" >> $FORGEJO_OUTPUT
+        echo "::endgroup::"
 
     - name: Build opencode prompt
       shell: bash
       id: build_opencode_prompt
       run: |
+        echo "::group::Build opencode prompt"
         NEWLINE=$'\n'
         if [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
           TRIGGER_TYPE="pr_review"
@@ -188,6 +197,7 @@ runs:
           if [ "$TRIGGER_TYPE" == "pr_review" ]; then
             REVIEW_BODY="$(jq -r '.review.content' $FORGEJO_EVENT_PATH)"
             TASK="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message: \"$REVIEW_BODY\""
+            echo "Retrieving PR Details JSON"
             PR_DETAILS_JSON="$(curl "$ISSUE_API_URL" | jq -c '{number: .number, title: .title, body: .body, assets: .assets, comment_count: .comments, username: .user.username}')"
           else
             COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
@@ -196,13 +206,20 @@ runs:
             PR_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
           fi
           PR_TITLE="$(echo "$PR_DETAILS_JSON" | jq -r '.title')"
+          echo "Retrieving All Comments JSON from issue API"
           ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
-          CONTEXT="* **Pull Request Title**: $PR_TITLE$NEWLINE* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE* **All Pull Request Review Comments**: $PR_REVIEW_COMMENTS_JSON"
+          CONTEXT=""
+          CONTEXT="$CONTEXT* **Pull Request Title**: $PR_TITLE$NEWLINE
+          CONTEXT="$CONTEXT* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE
+          CONTEXT="$CONTEXT* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE
+          CONTEXT="$CONTEXT* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE
+          CONTEXT="$CONTEXT* **All Pull Request Review Comments**: $PR_REVIEW_COMMENTS_JSON"
           ACTION_INDICATOR="To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO."
         else
           # Building out the prompt for an issue vs a PR
           ISSUE_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
           ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
+          echo "Retrieving All Comments JSON from issue API"
           ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
 
           USERNAME="$(jq -r '.comment.user.username' $FORGEJO_EVENT_PATH)"
@@ -210,7 +227,10 @@ runs:
           COMMENT_BODY="$(jq -r '.comment.body' $FORGEJO_EVENT_PATH)"
           ISSUE_TITLE="$(jq -r '.issue.title' $FORGEJO_EVENT_PATH)"
           TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
-          CONTEXT="* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE* **All $ISSUE_OR_PR Comments**: $ALL_COMMENTS_JSON"
+          CONTEXT=""
+          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE
+          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE
+          CONTEXT="$CONTEXT* **All $ISSUE_OR_PR Comments**: $ALL_COMMENTS_JSON"
           ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. The first commit summary (first line) and body text (subsequent lines) will be used for the title and description of the pull request, respectively. The description may be in markdown format."
         fi
         echo "issue_api_url=$ISSUE_API_URL" >> $FORGEJO_OUTPUT
@@ -241,6 +261,7 @@ runs:
         - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with `git status --porcelain`).
         FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         FORGEJO_OUTPUT_EOF_TOKEN
+        echo "::endgroup::"
       env:
         MENTIONS: ${{ inputs.mentions }}
         PR: ${{ steps.pr_details.outputs.pr }}
@@ -251,14 +272,20 @@ runs:
     - name: Switch to new local branch
       shell: bash
       if: steps.pr_details.outputs.pr == ''
-      run: git switch -c $BRANCH_NAME
+      run: |
+        echo "::group::Switch to new local branch"
+        git switch -c $BRANCH_NAME
+        echo "::endgroup::"
       env:
         BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
 
     - name: Switch to PR branch
       if: steps.pr_details.outputs.pr != ''
       shell: bash
-      run: git switch $BRANCH_NAME
+      run: |
+        echo "::group::Switch to existing PR branch"
+        git switch $BRANCH_NAME
+        echo "::endgroup::"
       env:
         BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
         
@@ -266,13 +293,21 @@ runs:
       shell: bash
       id: run_opencode
       run: |
+        echo "-----------------------"
+        echo "-- Starting opencode --"
+        echo "-----------------------"
         echo "opencode_final_output<<'FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN'" >> $FORGEJO_OUTPUT
         opencode run --model "$MODEL" --agent "${AGENT:-build}" --variant "${VARIANT:-high}" "$OPENCODE_COMMAND" >> $FORGEJO_OUTPUT
         echo "'FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN'" >> $FORGEJO_OUTPUT
+        echo "-----------------------"
+        echo "-- Finished opencode --"
+        echo "-----------------------"
 
         if [ -n "$(git status --porcelain)" ]; then
+          echo "::group::Yelling at the model for leaving the git repo dirty"
           echo "Berating the model for not committing changes as it was told to do."
           opencode run --model "$MODEL" --agent "${AGENT:-build}" --variant "${VARIANT:-high}" --continue "You have utterly failed at committing some of your changes to git. Either commit your changes or perform a git reset to clean up the repository. Any text respose made to this request will be ignored."
+          echo "::endgroup::"
         fi
       env:
         OPENCODE_COMMAND: ${{ steps.build_opencode_prompt.outputs.prompt }}
@@ -290,7 +325,7 @@ runs:
         ISSUE_API_URL: ${{ steps.build_opencode_prompt.outputs.issue_api_url }}
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
       run: |
-        echo "Adding the opencode output as a comment."
+        echo "Adding opencode output as a comment."
         COMMENT_JSON="$(jq -n --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
         curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
@@ -298,6 +333,7 @@ runs:
       shell: bash
       run: |
         if [ -n "$(git status --porcelain)" ]; then
+          echo "::group::Cleanup dirty git status"
           echo "Current repo status is STILL dirty. Printing patch file to preserve any critical information in the logs..."
           git add -A
           echo "--------------------"
@@ -309,6 +345,7 @@ runs:
           echo "--------------------------------------------"
           git reset --hard HEAD
           git clean -fd
+          echo "::endgroup::"
         fi
 
     - name: Authorize upstream git operations
@@ -325,17 +362,22 @@ runs:
       env:
         BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
       run: |
+        echo "::group::Checking for local commits"
         # Explicitly switch to the specified branch to make sure we're not on another one for some reason
         git switch $BRANCH_NAME
         UPSTREAM=$(git rev-parse --abbrev-ref @{u} 2>/dev/null || echo "origin/main")
         LOCAL_COMMITS=$(git rev-list "$UPSTREAM..HEAD" --count)
         echo "commit_count=$LOCAL_COMMITS" >> $FORGEJO_OUTPUT
         echo "Found $LOCAL_COMMITS local commits"
+        echo "::endgroup::"
 
     - name: Push to branch
       if: steps.check_local_commits.outputs.commit_count != '0'
       shell: bash
-      run: git push origin $BRANCH_NAME
+      run: |
+        echo "::group::Push git branch to origin"
+        git push origin $BRANCH_NAME
+        echo "::endgroup::"
       env:
         BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
 
@@ -343,6 +385,7 @@ runs:
       if: steps.check_local_commits.outputs.commit_count != '0' && steps.pr_details.outputs.pr == ''
       shell: bash
       run: |
+        echo "::group::Create a new PR"
         REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
         ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
         PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
@@ -378,17 +421,22 @@ runs:
             curl -X 'POST' "$ISSUE_API_URL/comments" -d "$BRANCH_COMMENT_JSON" > /dev/null
           fi
         fi
+        echo "::endgroup::"
       env:
         BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
         PR_CREATION_PAT: ${{ inputs.pr-creation-pat }}
 
     - name: Unreact to comment
       shell: bash
-      if: always()
+      if: always() && forgejo.event_name != 'pull_request_review_comment'
       run: |
-        if [ "$FORGEJO_EVENT_NAME" != "pull_request_review_comment" ]; then
-          # Easy when it's a regular comment, otherwise won't worry about it
-          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
-          curl -X 'DELETE' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
-        fi
+        # Easy when it's a regular comment, otherwise won't worry about it
+        COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+        echo "Unreacting to original comment"
+        curl -X 'DELETE' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
+
+    - name: Cleanup
+      shell: bash
+      if: always()
+      run: rm -f ~/.netrc ~/.curlrc
