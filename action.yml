@@ -130,6 +130,10 @@ runs:
           ISSUE_ID="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
           ISSUE_TYPE="Pull Request"
           jq -r '.review.content' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/triggering_request_body
+        elif [ "$FORGEJO_EVENT_NAME" == "issues" ]; then
+          ISSUE_ID="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
+          ISSUE_TYPE="Issue"
+          jq -r '.issue.body' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/triggering_request_body
         else
           echo "::endgroup::"
           echo "!!!!!!! Unknown event name: $FORGEJO_EVENT_NAME !!!!!!!"
@@ -233,10 +237,12 @@ runs:
 
         if [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
           LATEST_PR_REVIEW_ID="$(jq -c 'first(.[] | select(.stale == false)).id' "$RUNNER_TEMP/pr_reviews.json")"
-          TASK_MESSAGE="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message:"
+          TASK_MESSAGE="The user $USERNAME submitted a review ($LATEST_PR_REVIEW_ID) of a Pull Request, ${MENTIONS:+invoking you (with a string from \"$MENTIONS\") to }address the review:"
         elif [ "$FORGEJO_EVENT_NAME" == "issue_comment" ]; then
           COMMENT_ID="$(jq -r '.comment.id' "$FORGEJO_EVENT_PATH")"
-          TASK_MESSAGE="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message:"
+          TASK_MESSAGE="The user $USERNAME has sent a comment ($COMMENT_ID), ${MENTIONS:+invoking you (with a string from \"$MENTIONS\") to }address the comment:"
+        elif [ "$FORGEJO_EVENT_NAME" == "issues" ]; then
+          TASK_MESSAGE="The user $USERNAME has opened an issue ($ISSUE_NUMBER), ${MENTIONS:+invoking you (with a string from \"$MENTIONS\") to }address the issue:"
         else
           echo "::endgroup::"
           echo "!!!!!!! Unknown event name: $FORGEJO_EVENT_NAME !!!!!!!"
