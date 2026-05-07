@@ -90,52 +90,116 @@ runs:
         header = \"Accept: application/json\"
         header = \"Content-Type: application/json\"" >> ~/.curlrc
 
-    - name: Get PR Details
-      id: pr_details
+    - name: Debug Output
       shell: bash
       run: |
-        echo "::group::Get PR Details"
-        if [ "$FORGEJO_EVENT_NAME" == "issue_comment" ] && [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
-          PR="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
+        echo "::group::Event Debugging Output"
+        echo "--------------"
+        echo "Env Variables:"
+        echo "--------------"
+        env
+        echo "---------------"
+        echo "Forgejo Object:"
+        echo "---------------"
+        cat <<'EOF'
+        ${{ toJSON(forgejo) }}
+        EOF
+        echo "--------------"
+        echo "Event Details:"
+        echo "--------------"
+        cat $FORGEJO_EVENT_PATH
+        echo ""
+        echo "::endgroup::"
+    
+    - name: Get Details
+      id: get_details
+      shell: bash
+      run: |
+        echo "::group::Get Details"
+
+        # Get basic info and find out what type of request this is
+        REPO_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY"
+        BRANCH_NAME="opencode-$EPOCHREALTIME"
+        echo "$(jq -c '.sender' $FORGEJO_EVENT_PATH)" > $RUNNER_TEMP/sender_details.json
+        echo "$(jq -c '.repository' $FORGEJO_EVENT_PATH)" > $RUNNER_TEMP/repo_details.json
+        if [ "$FORGEJO_EVENT_NAME" == "issue_comment" ]; then
+          ISSUE_ID="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
+          [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ] && ISSUE_TYPE="Pull Request" || ISSUE_TYPE="Issue"
+          jq -r '.comment.body' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/triggering_request_body
         elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
-          PR="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
+          ISSUE_ID="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
+          ISSUE_TYPE="Pull Request"
+          jq -r '.review.content' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/triggering_request_body
+        else
+          echo "::endgroup::"
+          echo "!!!!!!! Unknown event name: $FORGEJO_EVENT_NAME !!!!!!!"
+          exit 1
         fi
-        echo "PR: $PR"
 
-        if [ ! -z "$PR" ]; then
-          echo "pr=$PR" >> $FORGEJO_OUTPUT
-          REVIEWS_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/pulls/$PR/reviews"
-          # We're grabbing the latest review (the currently active one) as the relevant one since there's not a reliable way to tell WHICH review triggered us
-          echo "Pulling all reviews attached to PR $PR"
-          PR_REVIEW_JSON="$(curl "$REVIEWS_URL?page=1&limit=1000")"
-          LATEST_PR_REVIEW_ID="$(echo "$PR_REVIEW_JSON" | jq -c 'first(.[] | select(.stale == false)).id')"
-          echo "latest_pr_review_id=$LATEST_PR_REVIEW_ID" >> $FORGEJO_OUTPUT
-          PR_REVIEWS_OBJ="$(echo "$PR_REVIEW_JSON" | jq -c 'map({id, state, body, commit_id, username: .user.username})')"
-          echo "pr_reviews_obj=$PR_REVIEWS_OBJ" >> $FORGEJO_OUTPUT
-
-          echo "Pulling review comments from any/all reviews on PR $PR"
-          ALL_COMMENTS_JSON=$(echo "$PR_REVIEW_JSON" | jq -r '.[].id' | xargs -I {} curl "$REVIEWS_URL/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})')
-          echo "all_comments_json=$ALL_COMMENTS_JSON" >> $FORGEJO_OUTPUT
+        # Get Issue related info
+        ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$ISSUE_ID"
+        if [ "$(jq -rc '.issue' $FORGEJO_EVENT_PATH)" == "null" ]; then
+          echo "Hitting the API to get Issue Details"
+          curl "$ISSUE_API_URL" | jq -c '{number: .number, title: .title, body: .body, assets: .assets, comment_count: .comments, username: .user.username}' > $RUNNER_TEMP/issue_details.json
+        else
+          jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/issue_details.json
         fi
+        echo "Hitting the API to get Issue Comments"
+        curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})' > $RUNNER_TEMP/issue_comments.json
+
+        # Get PR related info
+        if [ "$ISSUE_TYPE" == "Pull Request" ]; then
+          if [ "$(jq -rc '.pull_request' $FORGEJO_EVENT_PATH)" == "null" ]; then
+            echo "Hitting the API to get PR Details"
+            curl "$REPO_API_URL/pulls/$ISSUE_ID" > $RUNNER_TEMP/pr_details.json
+          else
+            $(jq -c '.pull_request' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/pr_details.json
+          fi
+          echo "Hitting the API to get PR Reviews"
+          curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews?page=1&limit=1000" > $RUNNER_TEMP/pr_reviews.json
+
+          echo "Hitting the API (repeatedly) to get PR Review Comments"
+          jq -r '.[].id' | xargs -I {} curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})' $RUNNER_TEMP/pr_reviews.json > $RUNNER_TEMP/pr_review_comments.json
+          BRANCH_NAME="$(jq -r '.head.ref' $RUNNER_TEMP/pr_details.json)"
+        fi
+
+        # Triggering Request Body: $RUNNER_TEMP/triggering_request_body
+        # Sender Details: $RUNNER_TEMP/sender_details.json
+        # Repo Details: $RUNNER_TEMP/repo_details.json
+
+        # Issue Details: $RUNNER_TEMP/issue_details.json
+        # Issue Comments: $RUNNER_TEMP/issue_comments.json
+
+        # PR Details: $RUNNER_TEMP/pr_details.json
+        # PR Reviews: $RUNNER_TEMP/pr_reviews.json
+        # PR Review Comments: $RUNNER_TEMP/pr_review_comments.json
+
+        # Output Variables
+        echo "issue_id=$ISSUE_ID" >> $FORGEJO_OUTPUT
+        echo "issue_type=$ISSUE_TYPE" >> $FORGEJO_OUTPUT
+        echo "branch_name=$BRANCH_NAME" >> $FORGEJO_OUTPUT
+
         echo "::endgroup::"
 
     - name: React to original comment
-      if: forgejo.event_name != 'pull_request_review_comment'
+      if: forgejo.event_name == 'issue_comment'
       shell: bash
       run: |
         # Easy when it's a regular comment, otherwise we won't worry about attaching it
         COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+        REPO_API_URL="$(jq -r '.url' $RUNNER_TEMP/repo_details.json)"
         echo "Reacting to original comment"
         curl -X 'POST' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
 
     - name: Create git commit details and hooks to attribute work properly
       shell: bash
+      env:
+        BRANCH_NAME: ${{ steps.get_details.outputs.branch_name }}
       run: |
         echo "::group::Create git details and hooks"
         git config --global push.autoSetupRemote true
-        git config --global user.email "$(jq -r '.sender.email' $FORGEJO_EVENT_PATH)"
-        git config --global user.name "$(jq -r '.sender.full_name' $FORGEJO_EVENT_PATH)"
+        git config --global user.email "$(jq -r '.email' $RUNNER_TEMP/sender_details.json)"
+        git config --global user.name "$(jq -r '.full_name' $RUNNER_TEMP/sender_details.json)"
 
         echo "Creating pre-commit hook to include Co-authored-by trailer"
         echo '#!/bin/bash
@@ -153,25 +217,9 @@ runs:
         ' > .git/hooks/post-commit
 
         chmod +x .git/hooks/prepare-commit-msg .git/hooks/post-commit
-        echo "::endgroup::"
 
-    - name: Get Branch Name
-      id: branch_name
-      shell: bash
-      run: |
-        echo "::group::Get Branch Name"
-        if [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
-          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
-          ISSUE_NUMBER="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
-          echo "Retrieving branch name from pull request"
-          BRANCH_NAME="$(curl -X 'GET' "$REPO_API_URL/pulls/$ISSUE_NUMBER" | jq -r '.head.ref')"
-        elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
-          BRANCH_NAME="$(jq -r '.pull_request.head.ref' $FORGEJO_EVENT_PATH)"
-        else
-          BRANCH_NAME="opencode-$EPOCHREALTIME"
-        fi
-        echo "Using branch name: $BRANCH_NAME"
-        echo "branch_name=$BRANCH_NAME" >> $FORGEJO_OUTPUT
+        echo "Switching current repo to $BRANCH_NAME"
+        git switch "$BRANCH_NAME" 2>/dev/null || git switch -c "$BRANCH_NAME"
         echo "::endgroup::"
 
     - name: Build opencode prompt
@@ -180,129 +228,74 @@ runs:
       run: |
         echo "::group::Build opencode prompt"
         NEWLINE=$'\n'
+
+        USERNAME="$(jq -r '.username' $RUNNER_TEMP/sender_details.json)"
+        ISSUE_TITLE="$(jq -r '.title' $RUNNER_TEMP/issue_details.json)"
+        ISSUE_NUMBER="$(jq -r '.number' $RUNNER_TEMP/issue_details.json)"
+
         if [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
-          TRIGGER_TYPE="pr_review"
-          ISSUE_OR_PR="Pull Request"
-        elif [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
-          TRIGGER_TYPE="pr_comment"
-          ISSUE_OR_PR="Pull Request"
-        else
-          TRIGGER_TYPE="issue_comment"
-          ISSUE_OR_PR="Issue"
-        fi
-
-        if [ "$ISSUE_OR_PR" == "Pull Request" ]; then
-          ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$PR"
-          USERNAME="$(jq -r '.sender.username' $FORGEJO_EVENT_PATH)"
-          if [ "$TRIGGER_TYPE" == "pr_review" ]; then
-            REVIEW_BODY="$(jq -r '.review.content' $FORGEJO_EVENT_PATH)"
-            TASK="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message: \"$REVIEW_BODY\""
-            echo "Retrieving PR Details JSON"
-            PR_DETAILS_JSON="$(curl "$ISSUE_API_URL" | jq -c '{number: .number, title: .title, body: .body, assets: .assets, comment_count: .comments, username: .user.username}')"
-          else
-            COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-            COMMENT_BODY="$(jq -r '.comment.body' $FORGEJO_EVENT_PATH)"
-            TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
-            PR_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
-          fi
-          PR_TITLE="$(echo "$PR_DETAILS_JSON" | jq -r '.title')"
-          echo "Retrieving All Comments JSON from issue API"
-          ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
-          CONTEXT=""
-          CONTEXT="$CONTEXT* **Pull Request Title**: $PR_TITLE$NEWLINE"
-          CONTEXT="$CONTEXT* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE"
-          CONTEXT="$CONTEXT* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE"
-          CONTEXT="$CONTEXT* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE"
-          CONTEXT="$CONTEXT* **All Pull Request Review Comments**: $PR_REVIEW_COMMENTS_JSON"
-          ACTION_INDICATOR="To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO."
-        else
-          # Building out the prompt for an issue vs a PR
-          ISSUE_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
-          ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
-          echo "Retrieving All Comments JSON from issue API"
-          ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
-
-          USERNAME="$(jq -r '.comment.user.username' $FORGEJO_EVENT_PATH)"
+          LATEST_PR_REVIEW_ID="$(jq -c 'first(.[] | select(.stale == false)).id' $RUNNER_TEMP/pr_reviews.json)"
+          TASK_MESSAGE="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message:"
+        elif [ "$FORGEJO_EVENT_NAME" == "issue_comment" ]; then
           COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-          COMMENT_BODY="$(jq -r '.comment.body' $FORGEJO_EVENT_PATH)"
-          ISSUE_TITLE="$(jq -r '.issue.title' $FORGEJO_EVENT_PATH)"
-          TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
-          CONTEXT=""
-          CONTEXT="$CONTEXT* **Issue Title**: $ISSUE_TITLE$NEWLINE"
-          CONTEXT="$CONTEXT* **Issue Details**: $ISSUE_DETAILS_JSON$NEWLINE"
-          CONTEXT="$CONTEXT* **All Issue Comments**: $ALL_COMMENTS_JSON"
-          ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines."
-          INCLUDE_PR_GUIDELINES='true'
+          TASK_MESSAGE="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message:"
+        else
+          echo "::endgroup::"
+          echo "!!!!!!! Unknown event name: $FORGEJO_EVENT_NAME !!!!!!!"
+          exit 1
         fi
-        echo "issue_api_url=$ISSUE_API_URL" >> $FORGEJO_OUTPUT
 
-        echo "Creating PR creation guidelines (just in case)"
-        IFS= read -r -d '' PR_CREATION_GUIDELINES <<'EOF'
-        ## Pull Request Creation Guidelines
-        * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
-        * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
-        * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
-        * **Detailed Pull Request Descriptions**: Details regarding justification, investigation, changes, decisions made, and other information about changes should be included as part of the Pull Request description, rather than on a seperate comment.
-        * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including `fixes #123` or `closes #345` somewhere within the PR description.
-        * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.
-        EOF
+        [ -f "$RUNNER_TEMP/pr_details.json" ] IS_PR='true'
 
         echo "Generating opencode prompt"
         cat >> $FORGEJO_OUTPUT <<FORGEJO_OUTPUT_EOF_TOKEN
         prompt<<FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         You are an AI assistant that helps develop and improve code repositories. The git repository in question is in the current directory.
 
-        ## TASK
-        $TASK
+        ## Task
+        $TASK_MESSAGE
+        $(cat "$RUNNER_TEMP/triggering_request_body")
 
         Please execute the requested task using the available tools.
-        Evaluate the $ISSUE_OR_PR and any attached information to fully understand the task.
+        Evaluate the ${IS_PR:-Issue}${IS_PR:+Pull Request} and any attached information to fully understand the task.
         Be thorough in your analysis and provide clear explanations.
 
-        ## Context
-        $CONTEXT
+        ${IS_PR:-## Context
+        * **Issue Title**: $ISSUE_TITLE
+        * **Issue Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c "$RUNNER_TEMP/issue_details.json")
+        * **All Issue Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c "$RUNNER_TEMP/issue_comments.json")}\
+        ${IS_PR:+## Context
+        * **Pull Request Title**: $ISSUE_TITLE
+        * **Pull Request Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c "$RUNNER_TEMP/issue_details.json")
+        * **Pull Request Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c "$RUNNER_TEMP/issue_comments.json")
+        * **All Pull Request Reviews**: $([ -f "$RUNNER_TEMP/pr_reviews.json" ] && jq -c "$RUNNER_TEMP/pr_reviews.json")
+        * **All Pull Request Review Comments**: $([ -f "$RUNNER_TEMP/pr_review_comments.json" ] && jq -c "$RUNNER_TEMP/pr_review_comments.json")}
 
         ## Guidelines
         - Explore the codebase before making changes
         - Follow existing code/style conventions
         - To reply with a comment: output text response (markdown format is allowed)
         - To make code changes: commit with clear messages
-        - $ACTION_INDICATOR
+        - \
+        ${IS_PR:-To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines.}\
+        ${IS_PR:+To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO.}
         - You may include any other potential issues found in your response comment, but do not make additional changes without the direction to do so.
         - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
         - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with `git status --porcelain`).
 
-        ${INCLUDE_PR_GUIDELINES:+${PR_CREATION_GUIDELINES}}
+        ${IS_PR:+## Pull Request Creation Guidelines
+        * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
+        * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
+        * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
+        * **Detailed Pull Request Descriptions**: Details regarding justification, investigation, changes, decisions made, and other information about changes should be included as part of the Pull Request description, rather than on a seperate comment.
+        * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including "fixes #123" or "closes #345" somewhere within the PR description.
+        * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.}
         FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         FORGEJO_OUTPUT_EOF_TOKEN
         echo "::endgroup::"
       env:
         MENTIONS: ${{ inputs.mentions }}
-        PR: ${{ steps.pr_details.outputs.pr }}
-        LATEST_PR_REVIEW_ID: ${{ steps.pr_details.outputs.latest_pr_review_id }}
-        PR_REVIEWS_OBJ: ${{ steps.pr_details.outputs.pr_reviews_obj }}
-        PR_REVIEW_COMMENTS_JSON: ${{ steps.pr_details.outputs.all_comments_json }}
 
-    - name: Switch to new local branch
-      shell: bash
-      if: steps.pr_details.outputs.pr == ''
-      run: |
-        echo "::group::Switch to new local branch"
-        git switch -c $BRANCH_NAME
-        echo "::endgroup::"
-      env:
-        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
-
-    - name: Switch to PR branch
-      if: steps.pr_details.outputs.pr != ''
-      shell: bash
-      run: |
-        echo "::group::Switch to existing PR branch"
-        git switch $BRANCH_NAME
-        echo "::endgroup::"
-      env:
-        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
-        
     - name: Run opencode
       shell: bash
       id: run_opencode
@@ -336,10 +329,10 @@ runs:
         steps.run_opencode.outputs.opencode_final_output != 'Changes complete' &&
         steps.run_opencode.outputs.opencode_final_output != 'Changes complete.'
       env:
-        ISSUE_API_URL: ${{ steps.build_opencode_prompt.outputs.issue_api_url }}
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
       run: |
         echo "Adding opencode output as a comment."
+        ISSUE_API_URL="$(jq -r '.url' $RUNNER_TEMP/issue_details.json)"
         COMMENT_JSON="$(jq -cn --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
         curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
@@ -366,7 +359,7 @@ runs:
       shell: bash
       run: |
         GIT_DOMAIN="$(echo "$FORGEJO_SERVER_URL" | awk -F[/:] '{print $4}')"
-        SENDER_NAME="$(jq -r '.sender.username' $FORGEJO_EVENT_PATH)"
+        SENDER_NAME="$(jq -r '.username' "$RUNNER_TEMP/sender_details.json")"
         # Only doing this AFTER we've finished calling opencode, so it can't push changes on its own
         echo -e "machine $GIT_DOMAIN\nlogin $SENDER_NAME\npassword $FORGEJO_TOKEN" > ~/.netrc
 
@@ -374,7 +367,7 @@ runs:
       shell: bash
       id: check_local_commits
       env:
-        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+        BRANCH_NAME: ${{ steps.get_details.outputs.branch_name }}
       run: |
         echo "::group::Checking for local commits"
         # Explicitly switch to the specified branch to make sure we're not on another one for some reason
@@ -387,21 +380,21 @@ runs:
 
     - name: Push to branch
       if: steps.check_local_commits.outputs.commit_count != '0'
+      env:
+        BRANCH_NAME: ${{ steps.get_details.outputs.branch_name }}
       shell: bash
       run: |
         echo "::group::Push git branch to origin"
         git push origin $BRANCH_NAME 2>&1
         echo "::endgroup::"
-      env:
-        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
 
     - name: Create PR
-      if: steps.check_local_commits.outputs.commit_count != '0' && steps.pr_details.outputs.pr == ''
+      if: steps.check_local_commits.outputs.commit_count != '0' && steps.get_details.outputs.issue_type == 'Issue'
       shell: bash
       run: |
         echo "::group::Create a new PR"
-        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
-        ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
+        REPO_API_URL="$(jq -r '.url' $RUNNER_TEMP/repo_details.json)"
+        ISSUE_API_URL="$(jq -r '.url' $RUNNER_TEMP/issue_details.json)"
         PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
         PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse | head -1)"
         PULL_REQ_JSON="$(jq -cn --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
@@ -438,18 +431,18 @@ runs:
         fi
         echo "::endgroup::"
       env:
-        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+        BRANCH_NAME: ${{ steps.get_details.outputs.branch_name }}
         PR_CREATION_PAT: ${{ inputs.pr-creation-pat }}
 
     - name: Unreact to comment
       shell: bash
-      if: always() && forgejo.event_name != 'pull_request_review_comment'
+      if: always() && forgejo.event_name == 'issue_comment'
       run: |
-        # Just in case?
+        # Just in case
         echo "::endgroup::"
         # Easy when it's a regular comment, otherwise won't worry about it
         COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
-        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+        REPO_API_URL="$(jq -r '.url' "$RUNNER_TEMP/repo_details.json")"
         echo "Unreacting to original comment"
         curl -X 'DELETE' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
 
