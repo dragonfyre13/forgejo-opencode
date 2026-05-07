@@ -282,7 +282,10 @@ runs:
 
     - name: Respond with new comment
       shell: bash
-      if: steps.run_opencode.outputs.opencode_final_output != '' && steps.run_opencode.outputs.opencode_final_output != 'Changes complete'
+      if: |
+        steps.run_opencode.outputs.opencode_final_output != '' &&
+        steps.run_opencode.outputs.opencode_final_output != 'Changes complete' &&
+        steps.run_opencode.outputs.opencode_final_output != 'Changes complete.'
       env:
         ISSUE_API_URL: ${{ steps.build_opencode_prompt.outputs.issue_api_url }}
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
