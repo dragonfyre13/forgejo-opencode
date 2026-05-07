@@ -298,6 +298,9 @@ runs:
       shell: bash
       id: run_opencode
       run: |
+        echo "Running with command:"
+        echo "$OPENCODE_COMMAND"
+        
         echo "-----------------------"
         echo "-- Starting opencode --"
         echo "-----------------------"
