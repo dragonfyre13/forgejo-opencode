@@ -25,7 +25,7 @@ jobs:
     runs-on: node24
     steps:
       - name: Run opencode
-        uses: https://github.com/dragonfyre13/forgejo-opencode@latest
+        uses: https://github.com/dragonfyre13/forgejo-opencode@main
         with:
           model: opencode-go/kimi-k2.6
           pr-creation-pat: ${{ secrets.PR_CREATION_PAT }}
