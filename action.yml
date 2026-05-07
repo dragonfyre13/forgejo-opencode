@@ -227,17 +227,15 @@ runs:
       id: build_opencode_prompt
       run: |
         echo "::group::Build opencode prompt"
-        NEWLINE=$'\n'
-
-        USERNAME="$(jq -r '.username' $RUNNER_TEMP/sender_details.json)"
-        ISSUE_TITLE="$(jq -r '.title' $RUNNER_TEMP/issue_details.json)"
-        ISSUE_NUMBER="$(jq -r '.number' $RUNNER_TEMP/issue_details.json)"
+        USERNAME="$(jq -r '.username' "$RUNNER_TEMP/sender_details.json")"
+        ISSUE_TITLE="$(jq -r '.title' "$RUNNER_TEMP/issue_details.json")"
+        ISSUE_NUMBER="$(jq -r '.number' "$RUNNER_TEMP/issue_details.json")"
 
         if [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
-          LATEST_PR_REVIEW_ID="$(jq -c 'first(.[] | select(.stale == false)).id' $RUNNER_TEMP/pr_reviews.json)"
+          LATEST_PR_REVIEW_ID="$(jq -c 'first(.[] | select(.stale == false)).id' "$RUNNER_TEMP/pr_reviews.json")"
           TASK_MESSAGE="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message:"
         elif [ "$FORGEJO_EVENT_NAME" == "issue_comment" ]; then
-          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+          COMMENT_ID="$(jq -r '.comment.id' "$FORGEJO_EVENT_PATH")"
           TASK_MESSAGE="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message:"
         else
           echo "::endgroup::"
@@ -262,14 +260,14 @@ runs:
 
         ${IS_PR:-## Context
         * **Issue Title**: $ISSUE_TITLE
-        * **Issue Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c "$RUNNER_TEMP/issue_details.json")
-        * **All Issue Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c "$RUNNER_TEMP/issue_comments.json")}\
+        * **Issue Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c '.' "$RUNNER_TEMP/issue_details.json")
+        * **All Issue Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c '.' "$RUNNER_TEMP/issue_comments.json")}\
         ${IS_PR:+## Context
         * **Pull Request Title**: $ISSUE_TITLE
-        * **Pull Request Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c "$RUNNER_TEMP/issue_details.json")
-        * **Pull Request Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c "$RUNNER_TEMP/issue_comments.json")
-        * **All Pull Request Reviews**: $([ -f "$RUNNER_TEMP/pr_reviews.json" ] && jq -c "$RUNNER_TEMP/pr_reviews.json")
-        * **All Pull Request Review Comments**: $([ -f "$RUNNER_TEMP/pr_review_comments.json" ] && jq -c "$RUNNER_TEMP/pr_review_comments.json")}
+        * **Pull Request Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c '.' "$RUNNER_TEMP/issue_details.json")
+        * **Pull Request Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c '.' "$RUNNER_TEMP/issue_comments.json")
+        * **All Pull Request Reviews**: $([ -f "$RUNNER_TEMP/pr_reviews.json" ] && jq -c '.' "$RUNNER_TEMP/pr_reviews.json")
+        * **All Pull Request Review Comments**: $([ -f "$RUNNER_TEMP/pr_review_comments.json" ] && jq -c '.' "$RUNNER_TEMP/pr_review_comments.json")}
 
         ## Guidelines
         - Explore the codebase before making changes
@@ -281,14 +279,14 @@ runs:
         ${IS_PR:+To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO.}
         - You may include any other potential issues found in your response comment, but do not make additional changes without the direction to do so.
         - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
-        - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with `git status --porcelain`).
+        - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with \`git status --porcelain\`).
 
         ${IS_PR:+## Pull Request Creation Guidelines
         * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
         * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
         * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
         * **Detailed Pull Request Descriptions**: Details regarding justification, investigation, changes, decisions made, and other information about changes should be included as part of the Pull Request description, rather than on a seperate comment.
-        * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including "fixes #123" or "closes #345" somewhere within the PR description.
+        * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including \`fixes #123\` or \`closes #345\` somewhere within the PR description.
         * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.}
         FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         FORGEJO_OUTPUT_EOF_TOKEN
@@ -332,8 +330,9 @@ runs:
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
       run: |
         echo "Adding opencode output as a comment."
-        ISSUE_API_URL="$(jq -r '.url' $RUNNER_TEMP/issue_details.json)"
+        ISSUE_API_URL="$(jq -r '.url' "$RUNNER_TEMP/issue_details.json")"
         COMMENT_JSON="$(jq -cn --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
+        echo curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON"
         curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
     - name: Discard any uncommitted local changes
