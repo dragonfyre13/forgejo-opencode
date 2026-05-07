@@ -245,7 +245,7 @@ runs:
           exit 1
         fi
 
-        [ -f "$RUNNER_TEMP/pr_details.json" ] IS_PR='true'
+        [ -f "$RUNNER_TEMP/pr_details.json" ] && IS_PR='true'
 
         echo "Generating opencode prompt"
         cat >> $FORGEJO_OUTPUT <<FORGEJO_OUTPUT_EOF_TOKEN
