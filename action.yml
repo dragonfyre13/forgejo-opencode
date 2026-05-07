@@ -153,7 +153,7 @@ runs:
             echo "Hitting the API to get PR Details"
             curl "$REPO_API_URL/pulls/$ISSUE_ID" > $RUNNER_TEMP/pr_details.json
           else
-            $(jq -c '.pull_request' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/pr_details.json
+            jq -c '.pull_request' $FORGEJO_EVENT_PATH > $RUNNER_TEMP/pr_details.json
           fi
           echo "Hitting the API to get PR Reviews"
           curl "$REPO_API_URL/pulls/$ISSUE_ID/reviews?page=1&limit=1000" > $RUNNER_TEMP/pr_reviews.json
