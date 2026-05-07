@@ -49,7 +49,7 @@ jobs:
 
 Another example, if you wanted to simply have opencode respond to any/all issues opened in a given repository, without any kind of trigger word(s):
 
-```
+```yaml
 name: opencode
 
 on:
