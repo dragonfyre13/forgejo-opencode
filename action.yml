@@ -232,10 +232,11 @@ runs:
           CONTEXT="$CONTEXT* **Issue Details**: $ISSUE_DETAILS_JSON$NEWLINE"
           CONTEXT="$CONTEXT* **All Issue Comments**: $ALL_COMMENTS_JSON"
           ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines."
-          INCLUDE_PR_GUIDELINES=true
+          INCLUDE_PR_GUIDELINES='true'
         fi
         echo "issue_api_url=$ISSUE_API_URL" >> $FORGEJO_OUTPUT
 
+        echo "Creating PR creation guidelines (just in case)"
         IFS= read -r -d '' PR_CREATION_GUIDELINES <<'EOF'
         ## Pull Request Creation Guidelines
         * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
@@ -444,6 +445,8 @@ runs:
       shell: bash
       if: always() && forgejo.event_name != 'pull_request_review_comment'
       run: |
+        # Just in case?
+        echo "::endgroup::"
         # Easy when it's a regular comment, otherwise won't worry about it
         COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
         REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
