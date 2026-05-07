@@ -228,12 +228,23 @@ runs:
           ISSUE_TITLE="$(jq -r '.issue.title' $FORGEJO_EVENT_PATH)"
           TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
           CONTEXT=""
-          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE"
-          CONTEXT="$CONTEXT* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE"
-          CONTEXT="$CONTEXT* **All $ISSUE_OR_PR Comments**: $ALL_COMMENTS_JSON"
-          ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. The first commit summary (first line) and body text (subsequent lines) will be used for the title and description of the pull request, respectively. The description may be in markdown format. If you create a Pull Request, any comments regarding the work you performed on it should be documented within the PR itself rather than on a seperate comment to the original issue. A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly."
+          CONTEXT="$CONTEXT* **Issue Title**: $ISSUE_TITLE$NEWLINE"
+          CONTEXT="$CONTEXT* **Issue Details**: $ISSUE_DETAILS_JSON$NEWLINE"
+          CONTEXT="$CONTEXT* **All Issue Comments**: $ALL_COMMENTS_JSON"
+          ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines."
+          INCLUDE_PR_GUIDELINES=true
         fi
         echo "issue_api_url=$ISSUE_API_URL" >> $FORGEJO_OUTPUT
+
+        IFS= read -r -d '' PR_CREATION_GUIDELINES <<'EOF'
+        ## Pull Request Creation Guidelines
+        * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
+        * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
+        * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
+        * **Detailed Pull Request Descriptions**: Details regarding justification, investigation, changes, decisions made, and other information about changes should be included as part of the Pull Request description, rather than on a seperate comment.
+        * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including `fixes #123` or `closes #345` somewhere within the PR description.
+        * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.
+        EOF
 
         echo "Generating opencode prompt"
         cat >> $FORGEJO_OUTPUT <<FORGEJO_OUTPUT_EOF_TOKEN
@@ -259,6 +270,8 @@ runs:
         - You may include any other potential issues found in your response comment, but do not make additional changes without the direction to do so.
         - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
         - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with `git status --porcelain`).
+
+        ${INCLUDE_PR_GUIDELINES:+${PR_CREATION_GUIDELINES}}
         FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         FORGEJO_OUTPUT_EOF_TOKEN
         echo "::endgroup::"
