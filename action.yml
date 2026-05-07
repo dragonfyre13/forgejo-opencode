@@ -13,14 +13,6 @@ inputs:
     description: "Agent to use. Must be a primary agent. Falls back to default_agent from config or 'build' if not found."
     required: false
 
-  share:
-    description: "Share the opencode session (defaults to true for public repos)"
-    required: false
-
-  prompt:
-    description: "Custom prompt to override the default prompt"
-    required: false
-
   mentions:
     description: "Comma-separated list of trigger phrases (case-insensitive). Defaults to '/opencode,/oc'"
     required: false
@@ -29,65 +21,372 @@ inputs:
     description: "Model variant for provider-specific reasoning effort (e.g., high, max, minimal)"
     required: false
 
+  pr-creation-pat:
+    description: "Personal Access Token for a bot type user, allowing PRs to be opened. Requires write access to repositories. User may need to be invited as contributor to the project as well."
+    required: false
+
 runs:
   using: "composite"
   steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+
     - name: Get opencode version
-      id: version
+      id: opencode_version
       shell: bash
       run: |
         VERSION=$(curl -sf https://api.github.com/repos/anomalyco/opencode/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
         echo "version=${VERSION:-latest}" >> $FORGEJO_OUTPUT
 
     - name: Cache opencode
-      id: cache
+      id: cache_opencode
       uses: actions/cache@v4
       with:
         path: ~/.opencode/bin
-        key: opencode-${{ runner.os }}-${{ runner.arch }}-${{ steps.version.outputs.version }}
+        key: opencode-${{ runner.os }}-${{ runner.arch }}-${{ steps.opencode_version.outputs.version }}
 
     - name: Install opencode
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache_opencode.outputs.cache-hit != 'true'
       shell: bash
       run: curl -fsSL https://opencode.ai/install | bash
 
-    - name: Cache forgejo
-      id: cache-forgejo
-      uses: actions/cache@v4
-      with:
-        path: ~/.forgejo/bin
-        key: fj-${{ runner.os }}-${{ runner.arch }}-0.5.0
-      
-    - name: Install forgejo
-      if: steps.cache-forgejo.outputs.cache-hit != 'true'
+    - name: Get jq version
+      id: jq_version
       shell: bash
       run: |
-        mkdir -p ~/.forgejo/bin
-        curl -fsSL https://codeberg.org/forgejo-contrib/forgejo-cli/releases/download/v0.5.0/forgejo-cli-x86_64-linux.tar.gz | tar -xzC ~/.forgejo/bin
-        curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-amd64 > ~/.forgejo/bin/jq
-        chmod +x ~/.forgejo/bin/fj ~/.forgejo/bin/jq
+        VERSION=$(curl -fsSL https://api.github.com/repos/jqlang/jq/releases/latest | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+        echo "version=${VERSION:-latest}" >> $FORGEJO_OUTPUT
 
-    - name: Add opencode to PATH
+    - name: Cache jq
+      id: cache_jq
+      uses: actions/cache@v4
+      with:
+        path: ~/.jq/bin
+        key: jq-${{ runner.os }}-${{ runner.arch }}-${{ steps.jq_version.outputs.version }}
+      
+    - name: Install jq
+      if: steps.cache_jq.outputs.cache-hit != 'true'
       shell: bash
-      run: echo "$HOME/.opencode/bin" >> $FORGEJO_PATH
+      run: |
+        mkdir -p ~/.jq/bin
+        curl -fsSL https://github.com/jqlang/jq/releases/download/${{ steps.jq_version.outputs.version }}/jq-linux-amd64 > ~/.jq/bin/jq
+        chmod +x ~/.jq/bin/jq
 
-    - name: Add forgejo to PATH
+    - name: Add opencode and jq to PATH
       shell: bash
-      run: echo "$HOME/.forgejo/bin" >> $FORGEJO_PATH
+      run: echo -e "$HOME/.opencode/bin\n$HOME/.jq/bin" >> $FORGEJO_PATH
 
+    - name: Set default curl options
+      shell: bash
+      run: |
+        echo "fail
+        silent
+        show-error
+        location
+        header = \"Authorization: Bearer $FORGEJO_TOKEN\"
+        header = \"Accept: application/json\"
+        header = \"Content-Type: application/json\"" >> ~/.curlrc
+
+    - name: Get PR Details
+      id: pr_details
+      shell: bash
+      run: |
+        if [ "$FORGEJO_EVENT_NAME" == "issue_comment" ] && [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
+          PR="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
+        elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
+          PR="$(jq -r '.number' $FORGEJO_EVENT_PATH)"
+        fi
+
+        if [ ! -z "$PR" ]; then
+          echo "pr=$PR" >> $FORGEJO_OUTPUT
+          REVIEWS_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/pulls/$PR/reviews"
+          echo "Pulling all reviews attached to PR $PR"
+          # We're grabbing the latest review (the currently active one) as the relevant one since there's not a reliable way to tell WHICH review triggered us
+          PR_REVIEW_JSON="$(curl "$REVIEWS_URL?page=1&limit=1000")"
+          LATEST_PR_REVIEW_ID="$(echo "$PR_REVIEW_JSON" | jq -c 'first(.[] | select(.stale == false)).id')"
+          echo "latest_pr_review_id=$LATEST_PR_REVIEW_ID" >> $FORGEJO_OUTPUT
+          PR_REVIEWS_OBJ="$(echo "$PR_REVIEW_JSON" | jq -c 'map({id, state, body, commit_id, username: .user.username})')"
+          echo "pr_reviews_obj=$PR_REVIEWS_OBJ" >> $FORGEJO_OUTPUT
+
+          echo "Pulling review comments from any/all reviews on PR $PR"
+          ALL_COMMENTS_JSON=$(echo "$PR_REVIEW_JSON" | jq -r '.[].id' | xargs -I {} curl "$REVIEWS_URL/{}/comments" | jq -cs 'flatten | map(select(. != null) | {id, body, username: .user.username, pull_request_review_id, path, commit_id, original_commit_id, diff_hunk, position, original_position})')
+          echo "all_comments_json=$ALL_COMMENTS_JSON" >> $FORGEJO_OUTPUT
+        fi
+
+    - name: React to original comment
+      shell: bash
+      run: |
+        if [ "$FORGEJO_EVENT_NAME" != "pull_request_review_comment" ]; then
+          # Easy when it's a regular comment, otherwise won't worry about it
+          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+          curl -X 'POST' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
+        fi
+
+    - name: Create git commit details and hooks to attribute work properly
+      shell: bash
+      run: |
+        git config --global push.autoSetupRemote true
+        git config --global user.email "$(jq -r '.sender.email' $FORGEJO_EVENT_PATH)"
+        git config --global user.name "$(jq -r '.sender.full_name' $FORGEJO_EVENT_PATH)"
+
+        echo "Creating pre-commit hook to include Co-authored-by trailer"
+        echo '#!/bin/bash
+        COMMIT_MSG_FILE=$1
+        COMMIT_SOURCE=$2
+        TRAILER="Co-authored-by: opencode <opencode@noreply.localhost>"
+        [ "$COMMIT_SOURCE" != "merge" ] && git interpret-trailers --in-place --trailer "$TRAILER" --if-exists addIfDifferent "$COMMIT_MSG_FILE"
+        ' > .git/hooks/prepare-commit-msg
+
+        echo "Creating a post-commit hook to set the committer details (vs author details)"
+        echo '#!/bin/bash
+        [ "$AMENDING" == "true" ] && exit 0
+        export AMENDING=true
+        GIT_COMMITTER_NAME="opencode" GIT_COMMITTER_EMAIL="opencode@noreply.localhost" git commit --amend --no-edit --no-verify 
+        ' > .git/hooks/post-commit
+
+        chmod +x .git/hooks/prepare-commit-msg .git/hooks/post-commit
+
+    - name: Get Branch Name
+      id: branch_name
+      shell: bash
+      run: |
+        if [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
+          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+          ISSUE_NUMBER="$(jq -r '.issue.number' $FORGEJO_EVENT_PATH)"
+          BRANCH_NAME="$(curl -X 'GET' "$REPO_API_URL/pulls/$ISSUE_NUMBER" | jq -r '.head.ref')"
+        elif [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
+          BRANCH_NAME="$(jq -r '.pull_request.head.ref' $FORGEJO_EVENT_PATH)"
+        else
+          BRANCH_NAME="opencode-$EPOCHREALTIME"
+        fi
+        echo "Using branch name: $BRANCH_NAME"
+        echo "branch_name=$BRANCH_NAME" >> $FORGEJO_OUTPUT
+
+    - name: Build opencode prompt
+      shell: bash
+      id: build_opencode_prompt
+      run: |
+        NEWLINE=$'\n'
+        if [ "$FORGEJO_EVENT_NAME" == "pull_request_review_comment" ]; then
+          TRIGGER_TYPE="pr_review"
+          ISSUE_OR_PR="Pull Request"
+        elif [ "$(jq -r '.is_pull' $FORGEJO_EVENT_PATH)" == "true" ]; then
+          TRIGGER_TYPE="pr_comment"
+          ISSUE_OR_PR="Pull Request"
+        else
+          TRIGGER_TYPE="issue_comment"
+          ISSUE_OR_PR="Issue"
+        fi
+
+        if [ "$ISSUE_OR_PR" == "Pull Request" ]; then
+          ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$PR"
+          USERNAME="$(jq -r '.sender.username' $FORGEJO_EVENT_PATH)"
+          if [ "$TRIGGER_TYPE" == "pr_review" ]; then
+            REVIEW_BODY="$(jq -r '.review.content' $FORGEJO_EVENT_PATH)"
+            TASK="The user $USERNAME has completed a review ($LATEST_PR_REVIEW_ID) of a Pull Request and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the review with the message: \"$REVIEW_BODY\""
+            PR_DETAILS_JSON="$(curl "$ISSUE_API_URL" | jq -c '{number: .number, title: .title, body: .body, assets: .assets, comment_count: .comments, username: .user.username}')"
+          else
+            COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+            COMMENT_BODY="$(jq -r '.comment.body' $FORGEJO_EVENT_PATH)"
+            TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
+            PR_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
+          fi
+          PR_TITLE="$(echo "$PR_DETAILS_JSON" | jq -r '.title')"
+          ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
+          CONTEXT="* **Pull Request Title**: $PR_TITLE$NEWLINE* **Pull Request Details**: $PR_DETAILS_JSON$NEWLINE* **Pull Request Comments**: $ALL_COMMENTS_JSON$NEWLINE* **All Pull Request Reviews**: $PR_REVIEWS_OBJ$NEWLINE* **All Pull Request Review Comments**: $PR_REVIEW_COMMENTS_JSON"
+          ACTION_INDICATOR="To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO."
+        else
+          # Building out the prompt for an issue vs a PR
+          ISSUE_DETAILS_JSON="$(jq -c '{number: .issue.number, title: .issue.title, body: .issue.body, assets: .issue.assets, comment_count: .issue.comments, username: .issue.user.username}' $FORGEJO_EVENT_PATH)"
+          ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
+          ALL_COMMENTS_JSON="$(curl "$ISSUE_API_URL/comments" | jq -c 'map({id, body, assets, username: .user.username})')"
+
+          USERNAME="$(jq -r '.comment.user.username' $FORGEJO_EVENT_PATH)"
+          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+          COMMENT_BODY="$(jq -r '.comment.body' $FORGEJO_EVENT_PATH)"
+          ISSUE_TITLE="$(jq -r '.issue.title' $FORGEJO_EVENT_PATH)"
+          TASK="The user $USERNAME has sent a comment ($COMMENT_ID) and included a string in \"${MENTIONS:-/opencode,/oc}\", invoking you to address the comment with the message: \"$COMMENT_BODY\""
+          CONTEXT="* **$ISSUE_OR_PR Title**: $ISSUE_TITLE$NEWLINE* **$ISSUE_OR_PR Details**: $ISSUE_DETAILS_JSON$NEWLINE* **All $ISSUE_OR_PR Comments**: $ALL_COMMENTS_JSON"
+          ACTION_INDICATOR="To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. The first commit summary (first line) and body text (subsequent lines) will be used for the title and description of the pull request, respectively. The description may be in markdown format."
+        fi
+        echo "issue_api_url=$ISSUE_API_URL" >> $FORGEJO_OUTPUT
+
+        echo "Generating opencode prompt"
+        cat >> $FORGEJO_OUTPUT <<FORGEJO_OUTPUT_EOF_TOKEN
+        prompt<<FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
+        You are an AI assistant that helps develop and improve code repositories. The git repository in question is in the current directory.
+
+        ## TASK
+        $TASK
+
+        Please execute the requested task using the available tools.
+        Evaluate the $ISSUE_OR_PR and any attached information to fully understand the task.
+        Be thorough in your analysis and provide clear explanations.
+
+        ## Context
+        $CONTEXT
+
+        ## Guidelines
+        - Explore the codebase before making changes
+        - Follow existing code/style conventions
+        - To reply with a comment: output text response (markdown format is allowed)
+        - To make code changes: commit with clear messages
+        - $ACTION_INDICATOR
+        - You may include any other potential issues found in your response comment, but do not make additional changes without the direction to do so.
+        - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
+        - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with `git status --porcelain`).
+        FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
+        FORGEJO_OUTPUT_EOF_TOKEN
+      env:
+        MENTIONS: ${{ inputs.mentions }}
+        PR: ${{ steps.pr_details.outputs.pr }}
+        LATEST_PR_REVIEW_ID: ${{ steps.pr_details.outputs.latest_pr_review_id }}
+        PR_REVIEWS_OBJ: ${{ steps.pr_details.outputs.pr_reviews_obj }}
+        PR_REVIEW_COMMENTS_JSON: ${{ steps.pr_details.outputs.all_comments_json }}
+
+    - name: Switch to new local branch
+      shell: bash
+      if: steps.pr_details.outputs.pr == ''
+      run: git switch -c $BRANCH_NAME
+      env:
+        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+
+    - name: Switch to PR branch
+      if: steps.pr_details.outputs.pr != ''
+      shell: bash
+      run: git switch $BRANCH_NAME
+      env:
+        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+        
     - name: Run opencode
       shell: bash
       id: run_opencode
       run: |
-        echo "fj auth add-key $FORGEJO_ACTOR $FORGEJO_TOKEN"
-        fj auth add-key $FORGEJO_ACTOR $FORGEJO_TOKEN
-        echo "FORGEJO_EVENT_PATH: $FORGEJO_EVENT_PATH"
-        cat $FORGEJO_EVENT_PATH
-        echo ""
+        echo "opencode_final_output<<'FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN'" >> $FORGEJO_OUTPUT
+        opencode run --model "$MODEL" --agent "${AGENT:-build}" --variant "${VARIANT:-high}" "$OPENCODE_COMMAND" >> $FORGEJO_OUTPUT
+        echo "'FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN'" >> $FORGEJO_OUTPUT
+
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "Berating the model for not committing changes as it was told to do."
+          opencode run --model "$MODEL" --agent "${AGENT:-build}" --variant "${VARIANT:-high}" --continue "You have utterly failed at committing some of your changes to git. Either commit your changes or perform a git reset to clean up the repository. Any text respose made to this request will be ignored."
+        fi
       env:
+        OPENCODE_COMMAND: ${{ steps.build_opencode_prompt.outputs.prompt }}
         MODEL: ${{ inputs.model }}
         AGENT: ${{ inputs.agent }}
-        SHARE: ${{ inputs.share }}
-        PROMPT: ${{ inputs.prompt }}
-        MENTIONS: ${{ inputs.mentions }}
         VARIANT: ${{ inputs.variant }}
+
+    - name: Respond with new comment
+      shell: bash
+      if: steps.run_opencode.outputs.opencode_final_output != '' && steps.run_opencode.outputs.opencode_final_output != 'Changes complete'
+      env:
+        ISSUE_API_URL: ${{ steps.build_opencode_prompt.outputs.issue_api_url }}
+        OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
+      run: |
+        echo "Adding the opencode output as a comment."
+        COMMENT_JSON="$(jq -n --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
+        echo curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON"
+        curl --no-silent -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
+
+    - name: Discard any uncommitted local changes
+      shell: bash
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "Current repo status is STILL dirty. Printing patch file to preserve any critical information in the logs..."
+          git add -A
+          echo "--------------------"
+          echo "Uncommitted changes:"
+          echo "--------------------"
+          git diff --cached
+          echo "--------------------------------------------"
+          echo "Cleaning repo to remove uncommitted changes:"
+          echo "--------------------------------------------"
+          git reset --hard HEAD
+          git clean -fd
+        fi
+
+    - name: Authorize upstream git operations
+      shell: bash
+      run: |
+        GIT_DOMAIN="$(echo "$FORGEJO_SERVER_URL" | awk -F[/:] '{print $4}')"
+        SENDER_NAME="$(jq -r '.sender.username' $FORGEJO_EVENT_PATH)"
+        # Only doing this AFTER we've finished calling opencode, so it can't push changes on its own
+        echo -e "machine $GIT_DOMAIN\nlogin $SENDER_NAME\npassword $FORGEJO_TOKEN" > ~/.netrc
+
+    - name: Check for local commits
+      shell: bash
+      id: check_local_commits
+      env:
+        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+      run: |
+        # Explicitly switch to the specified branch to make sure we're not on another one for some reason
+        git switch $BRANCH_NAME
+        UPSTREAM=$(git rev-parse --abbrev-ref @{u} 2>/dev/null || echo "origin/main")
+        LOCAL_COMMITS=$(git rev-list "$UPSTREAM..HEAD" --count)
+        echo "commit_count=$LOCAL_COMMITS" >> $FORGEJO_OUTPUT
+        echo "Found $LOCAL_COMMITS local commits"
+
+    - name: Push to branch
+      if: steps.check_local_commits.outputs.commit_count != '0'
+      shell: bash
+      run: git push origin $BRANCH_NAME
+      env:
+        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+
+    - name: Create PR
+      if: steps.check_local_commits.outputs.commit_count != '0' && steps.pr_details.outputs.pr == ''
+      shell: bash
+      run: |
+        REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+        ISSUE_API_URL="$(jq -r '.issue.url' $FORGEJO_EVENT_PATH)"
+        PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
+        PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse | head -1)"
+        PULL_REQ_JSON="$(jq -n --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
+        ACTION_RUN_URL="$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/actions/runs/$FORGEJO_RUN_NUMBER"
+        BRANCH_COMMENT_NO_KEY="Created branch [$BRANCH_NAME]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/src/branch/$BRANCH_NAME) with changes via [Action Run]($ACTION_RUN_URL).
+        [Create a PR from this branch]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/compare/main...$BRANCH_NAME)
+        <sub>Note: Passing a pr-creation-pat with read/write repository access as input allows creating these PRs automagically</sub>"
+        BRANCH_COMMENT_FAILED_KEY="Created branch [$BRANCH_NAME]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/src/branch/$BRANCH_NAME) with changes via [Action Run]($ACTION_RUN_URL).
+        [Create a PR from this branch]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/compare/main...$BRANCH_NAME)
+        <sub>Note: Using the pr-creation-pat to create a PR failed with "
+        
+        if [ -z "$PR_CREATION_PAT" ]; then
+          echo "Dropping a comment regarding the branch instead of actually creating a PR since the ephemeral token doesn't have permissions for it"
+          BRANCH_COMMENT_JSON="$(jq -n --arg body "$BRANCH_COMMENT_NO_KEY" '{body: $body}')"
+          curl -X 'POST' "$ISSUE_API_URL/comments" -d "$BRANCH_COMMENT_JSON" > /dev/null
+        else
+          echo "Creating PR using a special access key"
+          # BEWARE -- This request is not using the normal curlrc file (-q flag) and is instead using a custom PAT
+          PR_CREATE_RESP="$(curl -qsSL -X 'POST' -w "HTTP_STATUS:%{http_code}" -H "Authorization: Bearer $PR_CREATION_PAT" -H "Content-Type: application/json" -H "Accept: application/json" "$REPO_API_URL/pulls" -d "$PULL_REQ_JSON")"
+          PR_CREATE_STATUS_CODE="$(echo "$PR_CREATE_RESP" | tr -d '\n' | sed -e 's/.*HTTP_STATUS://')"
+          PR_CREATE_JSON_RESP="$(echo "$PR_CREATE_RESP" | sed -e 's/HTTP_STATUS:[0-9]\{3\}$//')"
+          PR_NUM_CREATED="$(echo "$PR_CREATE_JSON_RESP" | jq -r '.number')"
+          PR_CREATION_RESP_MESSAGE="$(echo "$PR_CREATE_JSON_RESP" | jq -r '.message')"
+          if [ $PR_CREATE_STATUS_CODE -ge 200 ] && [ $PR_CREATE_STATUS_CODE -le 299 ]; then
+            echo "Leaving a comment in the original issue with the PR reference"
+            PR_COMMENT_JSON="$(jq -n --arg body "Created PR #$PR_NUM_CREATED via [Action Run]($ACTION_RUN_URL)" '{body: $body}')"
+            curl -X 'POST' "$ISSUE_API_URL/comments" -d "$PR_COMMENT_JSON" > /dev/null
+          else
+            echo "Dropping a comment referring to the branch itself, since creating the PR failed"
+            BRANCH_COMMENT_JSON="$(jq -n --arg body "$BRANCH_COMMENT_FAILED_KEY Resp Code: $PR_CREATE_STATUS_CODE and Message: $PR_CREATION_RESP_MESSAGE </sub>" '{body: $body}')"
+            curl -X 'POST' "$ISSUE_API_URL/comments" -d "$BRANCH_COMMENT_JSON" > /dev/null
+          fi
+        fi
+      env:
+        BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+        PR_CREATION_PAT: ${{ inputs.pr-creation-pat }}
+
+    - name: Unreact to comment
+      shell: bash
+      if: always()
+      run: |
+        if [ "$FORGEJO_EVENT_NAME" != "pull_request_review_comment" ]; then
+          # Easy when it's a regular comment, otherwise won't worry about it
+          COMMENT_ID="$(jq -r '.comment.id' $FORGEJO_EVENT_PATH)"
+          REPO_API_URL="$(jq -r '.repository.url' $FORGEJO_EVENT_PATH)"
+          curl -X 'DELETE' "$REPO_API_URL/issues/comments/$COMMENT_ID/reactions" -d '{"content": "eyes"}' > /dev/null
+        fi
