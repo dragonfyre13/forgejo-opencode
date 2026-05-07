@@ -398,8 +398,8 @@ runs:
         REPO_API_URL="$(jq -r '.url' $RUNNER_TEMP/repo_details.json)"
         ISSUE_ID="$(jq -r '.number' $RUNNER_TEMP/issue_details.json)"
         ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$ISSUE_ID"
-        PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
-        PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse | head -1)"
+        PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse -1)"
+        PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse -1)"
         PULL_REQ_JSON="$(jq -cn --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
         ACTION_RUN_URL="$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/actions/runs/$FORGEJO_RUN_NUMBER"
         BRANCH_COMMENT_NO_KEY="Created branch [$BRANCH_NAME]($FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY/src/branch/$BRANCH_NAME) with changes via [Action Run]($ACTION_RUN_URL).
