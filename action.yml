@@ -281,7 +281,7 @@ runs:
         - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
         - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with \`git status --porcelain\`).
 
-        ${IS_PR:+## Pull Request Creation Guidelines
+        ${IS_PR:-## Pull Request Creation Guidelines
         * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
         * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
         * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
@@ -298,9 +298,6 @@ runs:
       shell: bash
       id: run_opencode
       run: |
-        echo "Running with command:"
-        echo "$OPENCODE_COMMAND"
-        
         echo "-----------------------"
         echo "-- Starting opencode --"
         echo "-----------------------"
@@ -333,9 +330,9 @@ runs:
         OPENCODE_FINAL_OUTPUT: ${{ steps.run_opencode.outputs.opencode_final_output }}
       run: |
         echo "Adding opencode output as a comment."
-        ISSUE_API_URL="$(jq -r '.url' "$RUNNER_TEMP/issue_details.json")"
+        ISSUE_ID="$(jq -r '.number' "$RUNNER_TEMP/issue_details.json")"
+        ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$ISSUE_ID"
         COMMENT_JSON="$(jq -cn --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
-        echo curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON"
         curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
     - name: Discard any uncommitted local changes
@@ -396,7 +393,8 @@ runs:
       run: |
         echo "::group::Create a new PR"
         REPO_API_URL="$(jq -r '.url' $RUNNER_TEMP/repo_details.json)"
-        ISSUE_API_URL="$(jq -r '.url' $RUNNER_TEMP/issue_details.json)"
+        ISSUE_ID="$(jq -r '.number' $RUNNER_TEMP/issue_details.json)"
+        ISSUE_API_URL="$FORGEJO_API_URL/repos/$FORGEJO_REPOSITORY/issues/$ISSUE_ID"
         PULL_REQ_TITLE="$(git log main..$BRANCH_NAME --format=%s --reverse | head -1)"
         PULL_REQ_BODY="$(git log main..$BRANCH_NAME --format=%b --reverse | head -1)"
         PULL_REQ_JSON="$(jq -cn --arg title "$PULL_REQ_TITLE" --arg body "$PULL_REQ_BODY" --arg head "$BRANCH_NAME" --arg base "main" '{title: $title, body: $body, head: $head, base: $base}')"
