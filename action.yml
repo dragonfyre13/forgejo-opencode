@@ -243,7 +243,7 @@ runs:
           exit 1
         fi
 
-        [ -f "$RUNNER_TEMP/pr_details.json" ] && IS_PR='true'
+        [ -f "$RUNNER_TEMP/pr_details.json" ] && IS_PR='true' || NOT_PR='true'
 
         echo "Generating opencode prompt"
         cat >> $FORGEJO_OUTPUT <<FORGEJO_OUTPUT_EOF_TOKEN
@@ -258,7 +258,7 @@ runs:
         Evaluate the ${IS_PR:-Issue}${IS_PR:+Pull Request} and any attached information to fully understand the task.
         Be thorough in your analysis and provide clear explanations.
 
-        ${IS_PR:-## Context
+        ${NOT_PR:+## Context
         * **Issue Title**: $ISSUE_TITLE
         * **Issue Details**: $([ -f "$RUNNER_TEMP/issue_details.json" ] && jq -c '.' "$RUNNER_TEMP/issue_details.json")
         * **All Issue Comments**: $([ -f "$RUNNER_TEMP/issue_comments.json" ] && jq -c '.' "$RUNNER_TEMP/issue_comments.json")}\
@@ -275,20 +275,20 @@ runs:
         - To reply with a comment: output text response (markdown format is allowed)
         - To make code changes: commit with clear messages
         - \
-        ${IS_PR:-To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines.}\
+        ${NOT_PR:+To create a new Pull Request, commit changes locally. DO NOT PUSH TO THE REMOTE REPO. Follow Pull Request Creation Guidelines.}\
         ${IS_PR:+To update the existing Pull Request, commit additional changes locally. DO NOT PUSH TO THE REMOTE REPO.}
         - You may include any other potential issues found in your response comment, but do not make additional changes without the direction to do so.
         - If no comment response is neccesary to complete the task, simply commit any required changes and respond with the exact text \`Changes complete\`.
         - **ALWAYS COMMIT OR RESET ANY CHANGES**: Do not leave the repository in a "dirty" state (can check with \`git status --porcelain\`).
 
-        ${IS_PR:-## Pull Request Creation Guidelines
+        ${NOT_PR:+## Pull Request Creation Guidelines
         * **First Commit Creates the PR**: The first commit summary (first line) and body text (subsequent lines) made will be used to define the title and description of the new pull request, respectively.
         * **Description is Markdown**: The Pull Request description (subsequent lines in the commit) is interpreted in markdown format.
         * **DO NOT follow commit message standards**: Since the first commit message is used to create the Pull Request itself, you ABSOLUTELY SHOULD NOT follow existing or standard commit message guidelines. The PR commit message will be squashed when merged by the user in any case.
         * **Detailed Pull Request Descriptions**: Details regarding justification, investigation, changes, decisions made, and other information about changes should be included as part of the Pull Request description, rather than on a seperate comment.
         * **Auto-Closing Original Issues**: Auto-closing the original issue on merge of a PR can be triggerd by including \`fixes #123\` or \`closes #345\` somewhere within the PR description.
-        * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.}
-        * **DO NOT switch branches**: The current branch has already been created to hold your changes in case a PR is needed.
+        * **An Issue Link is Already Created**: A separate comment will already be added to the issue, notifying users of the PR creation and linking to it directly. When a Pull Request is created, only respond with a comment if the response is unrelated to the changes made.
+        * **DO NOT switch branches**: The current branch has already been created to hold your changes in case a PR is needed.}
         FORGEJO_OUTPUT_FINAL_OUTPUT_TOKEN
         FORGEJO_OUTPUT_EOF_TOKEN
         echo "::endgroup::"
