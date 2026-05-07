@@ -289,8 +289,7 @@ runs:
       run: |
         echo "Adding the opencode output as a comment."
         COMMENT_JSON="$(jq -n --arg body "$OPENCODE_FINAL_OUTPUT" '{body: $body}')"
-        echo curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON"
-        curl --no-silent -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
+        curl -X 'POST' "$ISSUE_API_URL/comments" -d "$COMMENT_JSON" > /dev/null
 
     - name: Discard any uncommitted local changes
       shell: bash
