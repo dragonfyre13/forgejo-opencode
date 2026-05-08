@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> As of May 8th 2026, this repository is now hosted [on codeberg](https://codeberg.org/dragonfyre13/forgejo-opencode) instead of github, aligning with its focus on forgejo. Please switch any references there instead, as this repository will no longer be updated.
+
 Usage should look something like the below, just create it as a file in `.forgejo/workflows/opencode.yaml` within a repository. The PR_CREATION_PAT secret is optional, but highly recommended. Without it, only branches are created vs auto-creating PRs for  change requests.
 
 ```yaml
